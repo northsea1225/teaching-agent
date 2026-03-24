@@ -23,11 +23,24 @@ from app.services.openai_planner import (
     generate_lesson_outline_with_openai,
     openai_planner_ready,
 )
+from app.services.openai_evidence_rerank import (
+    openai_evidence_rerank_ready,
+    rerank_retrieval_hits_with_openai,
+)
 from app.services.openai_slide_planner import (
     SlidePlanDraft,
     SlidePlanSlideDraft,
     generate_slide_plan_draft_with_openai,
     openai_slide_planner_ready,
+)
+from app.services.openai_slide_regenerator import (
+    SlideRegenerationDraft,
+    generate_slide_regeneration_draft_with_openai,
+    openai_slide_regenerator_ready,
+)
+from app.services.openai_speaker_notes import (
+    polish_speaker_notes_with_openai,
+    openai_speaker_notes_ready,
 )
 from app.services.storage import load_parsed_asset
 from app.services.template_registry import select_template_id
@@ -242,6 +255,32 @@ def _rerank_hits(
     return [item[3] for item in ranked[:top_k]]
 
 
+def _rerank_hits_with_model(
+    spec: TeachingSpec,
+    hits: list[RetrievalHit],
+    *,
+    top_k: int,
+    settings=None,
+) -> list[RetrievalHit]:
+    base_ranked = _rerank_hits(spec, hits, top_k=top_k)
+    if not base_ranked:
+        return []
+
+    resolved_settings = settings or get_settings()
+    if not openai_evidence_rerank_ready(resolved_settings):
+        return base_ranked
+
+    try:
+        return rerank_retrieval_hits_with_openai(
+            spec,
+            base_ranked,
+            top_k=top_k,
+            settings=resolved_settings,
+        )
+    except Exception:
+        return base_ranked
+
+
 def fetch_retrieval_hits(
     spec: TeachingSpec,
     session: SessionState | None = None,
@@ -259,7 +298,12 @@ def fetch_retrieval_hits(
         else (session.web_search_enabled if session is not None else settings.web_search_enabled)
     )
     if not query:
-        return _rerank_hits(spec, session_hits, top_k=top_k)
+        return _rerank_hits_with_model(
+            spec,
+            session_hits,
+            top_k=top_k,
+            settings=settings,
+        )
 
     try:
         kb = LocalKnowledgeBase(namespace=store_namespace)
@@ -289,7 +333,12 @@ def fetch_retrieval_hits(
         else []
     )
     merged_hits = _merge_hits(session_hits, kb_hits, web_hits, top_k=candidate_top_k)
-    return _rerank_hits(spec, merged_hits, top_k=top_k)
+    return _rerank_hits_with_model(
+        spec,
+        merged_hits,
+        top_k=top_k,
+        settings=settings,
+    )
 
 
 def _subject_family(subject: str | None) -> str:
@@ -1308,6 +1357,60 @@ def _generate_slide_plan_rule_based(
     )
 
 
+def _polish_slide_plan_speaker_notes(
+    spec: TeachingSpec,
+    slide_plan: SlidePlan,
+    retrieval_hits: list[RetrievalHit],
+    *,
+    settings=None,
+) -> SlidePlan:
+    resolved_settings = settings or get_settings()
+    if not slide_plan.slides or not openai_speaker_notes_ready(resolved_settings):
+        return slide_plan
+
+    slide_hits_map = {
+        slide.slide_number: _filter_hits_for_slide(retrieval_hits, slide, limit=4)
+        for slide in slide_plan.slides
+    }
+    try:
+        draft = polish_speaker_notes_with_openai(
+            spec,
+            slide_plan.slides,
+            slide_hits_map,
+            settings=resolved_settings,
+        )
+    except Exception:
+        return slide_plan
+
+    polished_by_number = {
+        item.slide_number: _sanitize_text_items(spec, item.speaker_notes, limit=4)
+        for item in draft.slides
+    }
+    updated_slides: list[SlidePlanItem] = []
+    changed = False
+    for slide in slide_plan.slides:
+        polished_notes = polished_by_number.get(slide.slide_number) or []
+        if polished_notes and polished_notes != slide.speaker_notes:
+            changed = True
+            updated_slides.append(
+                slide.model_copy(
+                    update={
+                        "speaker_notes": polished_notes,
+                        "revision_notes": _unique_texts(
+                            slide.revision_notes + ["模型润色讲稿，仅调整口播表达"],
+                            limit=5,
+                        ),
+                    }
+                )
+            )
+        else:
+            updated_slides.append(slide)
+
+    if not changed:
+        return slide_plan
+    return slide_plan.model_copy(update={"slides": updated_slides})
+
+
 def generate_slide_plan(
     spec: TeachingSpec,
     outline: LessonOutline,
@@ -1317,14 +1420,86 @@ def generate_slide_plan(
 ) -> SlidePlan:
     hits = _sanitize_hits_for_spec(spec, retrieval_hits or [])
     settings = get_settings()
+    slide_plan: SlidePlan | None = None
     if allow_llm and openai_slide_planner_ready(settings):
         try:
             draft = generate_slide_plan_draft_with_openai(spec, outline, hits, settings=settings)
             if draft.slides:
-                return _merge_slide_plan_draft(spec, outline, draft, hits)
+                slide_plan = _merge_slide_plan_draft(spec, outline, draft, hits)
         except Exception:
             pass
-    return _generate_slide_plan_rule_based(spec, outline, hits)
+    if slide_plan is None:
+        slide_plan = _generate_slide_plan_rule_based(spec, outline, hits)
+    if allow_llm:
+        return _polish_slide_plan_speaker_notes(
+            spec,
+            slide_plan,
+            hits,
+            settings=settings,
+        )
+    return slide_plan
+
+
+def _merge_slide_regeneration_draft(
+    spec: TeachingSpec,
+    current: SlidePlanItem,
+    draft: SlideRegenerationDraft,
+    slide_hits: list[RetrievalHit],
+    *,
+    instructions: str | None = None,
+) -> SlidePlanItem:
+    subject_family = _subject_family(spec.subject)
+    slide_type = (
+        _normalize_slide_plan_type(draft.slide_type)
+        if draft.slide_type
+        else current.slide_type
+    )
+    title = _normalize_compact_text(draft.title) or current.title
+    goal = _normalize_compact_text(draft.goal) or current.goal
+    key_points = _sanitize_text_items(spec, draft.key_points, limit=4)
+    if not key_points:
+        key_points = current.key_points
+    if not key_points:
+        key_points = _suggest_key_points_for_slide(spec, slide_type, title, goal, slide_hits)[:3]
+
+    visual_brief = _sanitize_text_items(spec, draft.visual_brief, limit=4)
+    if not visual_brief:
+        visual_brief = current.visual_brief
+
+    speaker_notes = _sanitize_text_items(spec, draft.speaker_notes, limit=4)
+    if not speaker_notes:
+        speaker_notes = current.speaker_notes
+
+    interaction_mode = _normalize_slide_plan_interaction(
+        draft.interaction_mode,
+        fallback=current.interaction_mode,
+    )
+    layout_hint = _normalize_compact_text(draft.layout_hint) or current.layout_hint or _layout_hint_for_slide(slide_type)
+    citations = _citations_for_slide(slide_hits, slide_type) or current.citations
+    draft_revision_notes = _sanitize_text_items(spec, draft.revision_notes, limit=3)
+    revision_notes = _unique_texts(
+        current.revision_notes
+        + draft_revision_notes
+        + ["模型单页再生成", "仅基于当前页引用和既有要点重组"]
+        + ([instructions] if instructions else []),
+        limit=5,
+    )
+
+    return current.model_copy(
+        update={
+            "slide_type": slide_type,
+            "title": title,
+            "goal": goal,
+            "template_id": select_template_id(slide_type, subject_family),
+            "key_points": key_points,
+            "visual_brief": visual_brief,
+            "speaker_notes": speaker_notes,
+            "interaction_mode": interaction_mode,
+            "citations": citations,
+            "layout_hint": layout_hint,
+            "revision_notes": revision_notes,
+        }
+    )
 
 
 def _generate_lesson_outline_rule_based(
@@ -1644,30 +1819,85 @@ def regenerate_slide_in_session(
         current.slide_type in {SlideType.CONCEPT, SlideType.COMPARISON, SlideType.PROCESS, SlideType.MEDIA, SlideType.TIMELINE, SlideType.SUMMARY}
         and not slide_hits
     )
-    regenerated = _build_manual_slide_item(
-        session.teaching_spec,
-        slide_hits,
-        slide_number=current.slide_number,
-        title=current.title,
-        goal=current.goal,
-        slide_type=current.slide_type,
-        interaction_mode=current.interaction_mode,
-        template_id=current.template_id,
-        key_points=current.key_points if preserve_existing_content else None,
-        speaker_notes=(
-            _unique_texts(
-                current.speaker_notes + ["仅基于当前页既有要点重组，缺少引用时不扩写新结构。"],
+    regenerated = None
+    settings = get_settings()
+    regenerator_llm_ready = openai_slide_regenerator_ready(settings)
+    if regenerator_llm_ready:
+        try:
+            draft = generate_slide_regeneration_draft_with_openai(
+                session.teaching_spec,
+                current,
+                slide_hits,
+                instructions=instructions,
+                settings=settings,
+            )
+            regenerated = _merge_slide_regeneration_draft(
+                session.teaching_spec,
+                current,
+                draft,
+                slide_hits,
+                instructions=instructions,
+            )
+        except Exception:
+            regenerated = None
+
+    if regenerated is None:
+        regenerated = _build_manual_slide_item(
+            session.teaching_spec,
+            slide_hits,
+            slide_number=current.slide_number,
+            title=current.title,
+            goal=current.goal,
+            slide_type=current.slide_type,
+            interaction_mode=current.interaction_mode,
+            template_id=current.template_id,
+            key_points=current.key_points if preserve_existing_content else None,
+            speaker_notes=(
+                _unique_texts(
+                    current.speaker_notes + ["仅基于当前页既有要点重组，缺少引用时不扩写新结构。"],
+                    limit=4,
+                )
+                if preserve_existing_content
+                else None
+            ),
+            layout_hint=current.layout_hint,
+            revision_notes=current.revision_notes + ["regenerated", "仅基于当前页引用和既有要点重组"],
+            instructions=instructions,
+        )
+        if preserve_existing_content and current.citations:
+            regenerated = regenerated.model_copy(update={"citations": current.citations})
+    if regenerator_llm_ready and openai_speaker_notes_ready(settings):
+        try:
+            notes_draft = polish_speaker_notes_with_openai(
+                session.teaching_spec,
+                [regenerated],
+                {regenerated.slide_number: slide_hits},
+                settings=settings,
+            )
+            polished_notes = _sanitize_text_items(
+                session.teaching_spec,
+                next(
+                    (
+                        item.speaker_notes
+                        for item in notes_draft.slides
+                        if item.slide_number == regenerated.slide_number
+                    ),
+                    [],
+                ),
                 limit=4,
             )
-            if preserve_existing_content
-            else None
-        ),
-        layout_hint=current.layout_hint,
-        revision_notes=current.revision_notes + ["regenerated", "仅基于当前页引用和既有要点重组"],
-        instructions=instructions,
-    )
-    if preserve_existing_content and current.citations:
-        regenerated = regenerated.model_copy(update={"citations": current.citations})
+            if polished_notes:
+                regenerated = regenerated.model_copy(
+                    update={
+                        "speaker_notes": polished_notes,
+                        "revision_notes": _unique_texts(
+                            regenerated.revision_notes + ["模型润色讲稿，仅调整口播表达"],
+                            limit=5,
+                        ),
+                    }
+                )
+        except Exception:
+            pass
     slides = session.slide_plan.slides[:]
     slides[index] = regenerated
     session.slide_plan = _renumber_slide_plan(session.slide_plan.model_copy(update={"slides": slides}))

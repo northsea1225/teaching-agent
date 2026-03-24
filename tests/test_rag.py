@@ -5,11 +5,12 @@ import shutil
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+import numpy as np
 
 from app.config import get_settings
 from app.main import app
 from app.models import ParsedAsset, ResourceType
-from app.services.rag import LocalKnowledgeBase
+from app.services.rag import LocalKnowledgeBase, OpenAIEmbeddingProvider
 
 
 client = TestClient(app)
@@ -19,6 +20,32 @@ def _make_project_test_dir(base: Path) -> Path:
     path = base / f"_rag_tests_{uuid4().hex}"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+class _FakeEmbeddingRecord:
+    def __init__(self, embedding: list[float]) -> None:
+        self.embedding = embedding
+
+
+class _FakeEmbeddingResponse:
+    def __init__(self, embeddings: list[list[float]]) -> None:
+        self.data = [_FakeEmbeddingRecord(item) for item in embeddings]
+
+
+class _FakeEmbeddingsAPI:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def create(self, *, model: str, input: list[str], dimensions: int | None = None) -> _FakeEmbeddingResponse:
+        self.calls.append(list(input))
+        width = dimensions or 4
+        embeddings = [[float(index + 1)] * width for index, _ in enumerate(input)]
+        return _FakeEmbeddingResponse(embeddings)
+
+
+class _FakeOpenAIClient:
+    def __init__(self) -> None:
+        self.embeddings = _FakeEmbeddingsAPI()
 
 
 def test_local_knowledge_base_ingest_and_search_roundtrip() -> None:
@@ -199,3 +226,82 @@ def test_kb_api_search_supports_metadata_filters() -> None:
     finally:
         shutil.rmtree(source_dir, ignore_errors=True)
         shutil.rmtree(settings.vector_store_dir / namespace, ignore_errors=True)
+
+
+def test_openai_embedding_provider_batches_requests_for_compatible_gateways() -> None:
+    provider = OpenAIEmbeddingProvider(
+        api_key="test",
+        model="text-embedding-v4",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        batch_size=10,
+    )
+    fake_client = _FakeOpenAIClient()
+    provider.client = fake_client  # type: ignore[assignment]
+
+    vectors = provider.embed_texts([f"chunk-{index}" for index in range(25)])
+
+    assert vectors.shape == (25, 4)
+    assert [len(call) for call in fake_client.embeddings.calls] == [10, 10, 5]
+    assert provider.dimension == 4
+
+
+def test_openai_backed_reset_rebuild_ignores_previous_store_dimension() -> None:
+    settings = get_settings()
+    source_dir = _make_project_test_dir(settings.knowledge_base_dir)
+    store_dir = _make_project_test_dir(settings.vector_store_dir)
+
+    try:
+        seed_path = source_dir / "history.txt"
+        seed_path.write_text("工业革命推动了生产组织方式的变化。", encoding="utf-8")
+
+        local_kb = LocalKnowledgeBase(store_dir=store_dir, embedding_backend="local")
+        local_kb.ingest_paths([seed_path], reset=True)
+
+        rebuilt_kb = LocalKnowledgeBase(store_dir=store_dir, embedding_backend="local")
+        rebuilt_kb.embedding_provider = OpenAIEmbeddingProvider(
+            api_key="test",
+            model="text-embedding-v4",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            batch_size=10,
+        )
+        fake_client = _FakeOpenAIClient()
+        rebuilt_kb.embedding_provider.client = fake_client  # type: ignore[assignment]
+        rebuilt_kb.dimension = None
+        rebuilt_kb.index = None
+        rebuilt_kb.metadata = []
+
+        stats = rebuilt_kb.ingest_paths([seed_path], reset=True)
+
+        assert stats["processed_files"] == 1
+        assert rebuilt_kb.dimension == 4
+        assert rebuilt_kb.index is not None
+        assert rebuilt_kb.index.d == 4
+    finally:
+        shutil.rmtree(source_dir, ignore_errors=True)
+        shutil.rmtree(store_dir, ignore_errors=True)
+
+
+def test_ingest_paths_skips_duplicate_chunk_ids_on_reimport() -> None:
+    settings = get_settings()
+    source_dir = _make_project_test_dir(settings.knowledge_base_dir)
+    store_dir = _make_project_test_dir(settings.vector_store_dir)
+
+    try:
+        lesson_path = source_dir / "history_repeat.txt"
+        lesson_path.write_text(
+            "工业革命推动机器大生产，也推动了工厂制度和城市化。",
+            encoding="utf-8",
+        )
+
+        kb = LocalKnowledgeBase(store_dir=store_dir, embedding_backend="local")
+        first_stats = kb.ingest_paths([lesson_path], reset=True)
+        second_stats = kb.ingest_paths([lesson_path], reset=False)
+
+        assert first_stats["processed_files"] == 1
+        assert first_stats["chunk_count"] >= 1
+        assert second_stats["processed_files"] == 0
+        assert second_stats["chunk_count"] == 0
+        assert second_stats["total_chunks_in_store"] == first_stats["total_chunks_in_store"]
+    finally:
+        shutil.rmtree(source_dir, ignore_errors=True)
+        shutil.rmtree(store_dir, ignore_errors=True)

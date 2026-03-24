@@ -9,6 +9,8 @@ from app.config import get_settings
 from app.main import app
 from app.models import RetrievalHit, SessionStage, SessionState, TeachingSpec
 from app.services.confirmation import build_planning_confirmation
+from app.services.openai_quality_review import AIQualityIssueDraft, AIQualityReviewDraft
+from app.services.quality import build_quality_report
 from app.services.storage import session_store
 from app.services.svg import generate_svg_deck_for_session
 
@@ -167,6 +169,77 @@ def test_quality_report_endpoint_returns_workspace_quality_state() -> None:
         assert payload["session"]["workspace_path"]
     finally:
         _cleanup_workspace(session.session_id)
+
+
+def test_quality_report_merges_ai_review_issues_when_gateway_is_ready(monkeypatch) -> None:
+    session = SessionState(
+        title="AI Quality Review Demo",
+        teaching_spec=TeachingSpec(
+            education_stage="middle-school",
+            subject="history",
+            lesson_title="工业革命",
+            class_duration_minutes=45,
+            learning_objectives=[{"description": "理解蒸汽机与工厂制度的关系"}],
+        ),
+    )
+    session.retrieval_hits = [
+        RetrievalHit(
+            chunk_id="hist-1",
+            content="工业革命推动蒸汽机和工厂制度发展。",
+            source_type="knowledge-base",
+            source_title="历史教材",
+        )
+    ]
+    session.planning_confirmation.confirmed = True
+    session = generate_svg_deck_for_session(session, top_k=3)
+
+    monkeypatch.setattr("app.services.quality.openai_quality_review_ready", lambda settings: True)
+    monkeypatch.setattr(
+        "app.services.quality.review_quality_with_openai",
+        lambda *args, **kwargs: AIQualityReviewDraft(
+            summary="第 2 页和第 3 页与主线衔接偏弱，优先收紧目标回扣。",
+            issues=[
+                AIQualityIssueDraft(
+                    severity="medium",
+                    code="goal_coverage_gap",
+                    message="部分页面没有充分回扣“蒸汽机与工厂制度”的主目标。",
+                    slide_number=2,
+                )
+            ],
+        ),
+    )
+
+    report = build_quality_report(session)
+
+    assert any(issue.code == "goal_coverage_gap" and issue.origin == "ai" for issue in report.issues)
+    assert "AI审稿" in (report.summary or "")
+
+
+def test_quality_report_falls_back_to_rule_only_when_ai_review_fails(monkeypatch) -> None:
+    session = SessionState(
+        title="AI Review Fallback Demo",
+        teaching_spec=TeachingSpec(
+            education_stage="middle-school",
+            subject="history",
+            lesson_title="工业革命",
+            class_duration_minutes=45,
+            learning_objectives=[{"description": "理解蒸汽机与工厂制度的关系"}],
+        ),
+    )
+    session.retrieval_hits = []
+    session.planning_confirmation.confirmed = True
+    session = generate_svg_deck_for_session(session, top_k=3)
+
+    monkeypatch.setattr("app.services.quality.openai_quality_review_ready", lambda settings: True)
+    monkeypatch.setattr(
+        "app.services.quality.review_quality_with_openai",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("gateway down")),
+    )
+
+    report = build_quality_report(session)
+
+    assert report.issues
+    assert all(issue.code != "goal_coverage_gap" for issue in report.issues)
 
 
 def test_svg_generation_assigns_template_ids_and_finalizes_markup() -> None:

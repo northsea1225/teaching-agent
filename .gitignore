@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 .pytest_cache/
@@ -20,3 +22,7 @@ vector_store/
 *.log
 Thumbs.db
 Desktop.ini
+
+.codepilot-uploads/
+pipeline_smoke_output.json
+public_seed_files.txt

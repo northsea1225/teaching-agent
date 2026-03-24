@@ -15,6 +15,12 @@ from app.services.openai_slide_planner import (
     build_slide_plan_input,
     openai_slide_planner_ready,
 )
+from app.services.openai_speaker_notes import (
+    SpeakerNotesDeckDraft,
+    SpeakerNotesSlideDraft,
+    build_speaker_notes_input,
+    openai_speaker_notes_ready,
+)
 
 
 def test_build_outline_input_contains_spec_and_retrieval_hits() -> None:
@@ -89,13 +95,31 @@ def test_openai_planner_ready_requires_dedicated_gateway_settings() -> None:
         planner_base_url="",
         planner_model="",
         planner_timeout_seconds=45.0,
+        use_openai_evidence_rerank=False,
+        evidence_rerank_api_key="",
+        evidence_rerank_base_url="",
+        evidence_rerank_model="",
+        evidence_rerank_timeout_seconds=45.0,
+        use_openai_quality_review=False,
+        quality_review_api_key="",
+        quality_review_base_url="",
+        quality_review_model="",
+        quality_review_timeout_seconds=45.0,
         use_openai_slide_planner=False,
         slide_planner_api_key="",
         slide_planner_base_url="",
         slide_planner_model="",
         slide_planner_timeout_seconds=60.0,
+        use_openai_speaker_notes=False,
+        speaker_notes_api_key="",
+        speaker_notes_base_url="",
+        speaker_notes_model="",
+        speaker_notes_timeout_seconds=60.0,
         embeddings_backend="local",
+        embeddings_api_key="",
+        embeddings_base_url="",
         embeddings_model="text-embedding-3-small",
+        embeddings_dimensions=None,
         local_embedding_dim=256,
         transcribe_model="gpt-4o-mini-transcribe",
         rag_chunk_size=400,
@@ -132,11 +156,22 @@ def test_openai_planner_ready_requires_dedicated_gateway_settings() -> None:
             "slide_planner_model": "gemini-3.1-pro-preview",
         }
     )
+    speaker_notes_enabled = Settings(
+        **{
+            **disabled.__dict__,
+            "use_openai_speaker_notes": True,
+            "speaker_notes_api_key": "sk-notes",
+            "speaker_notes_base_url": "https://notes.example/v1",
+            "speaker_notes_model": "gemini-3.1-pro-preview",
+        }
+    )
 
     assert openai_planner_ready(disabled) is False
     assert openai_planner_ready(enabled) is True
     assert openai_slide_planner_ready(disabled) is False
     assert openai_slide_planner_ready(slide_enabled) is True
+    assert openai_speaker_notes_ready(disabled) is False
+    assert openai_speaker_notes_ready(speaker_notes_enabled) is True
 
 
 def test_build_slide_plan_input_contains_outline_and_hits() -> None:
@@ -193,3 +228,63 @@ def test_slide_plan_draft_model_accepts_valid_slide_payload() -> None:
 
     assert draft.title == "工业革命 slide plan"
     assert draft.slides[0].slide_type == "cover"
+
+
+def test_build_speaker_notes_input_contains_current_notes_and_evidence() -> None:
+    spec = TeachingSpec(
+        education_stage="middle-school",
+        subject="history",
+        lesson_title="工业革命",
+        learning_objectives=[{"description": "理解蒸汽机与工厂制度的关系"}],
+    )
+    slide = SlidePlanSlideDraft(
+        section_title="核心概念",
+        title="蒸汽机与工厂制度",
+        goal="说明蒸汽机如何改变生产组织",
+        slide_type="concept",
+        key_points=["蒸汽机提升生产效率", "工厂制度改变劳动组织"],
+        speaker_notes=["先引导学生观察教材证据，再解释工厂制度变化。"],
+        interaction_mode="none",
+        layout_hint="左文右图",
+    )
+    from app.models import SlidePlanItem, SlideType, InteractionMode, RetrievalHit
+
+    rendered_slide = SlidePlanItem(
+        slide_number=2,
+        title=slide.title,
+        goal=slide.goal,
+        slide_type=SlideType.CONCEPT,
+        key_points=slide.key_points,
+        speaker_notes=slide.speaker_notes,
+        interaction_mode=InteractionMode.NONE,
+    )
+    hits = {
+        2: [
+            RetrievalHit(
+                chunk_id="hist-1",
+                content="蒸汽机推动工厂制度形成并提高生产效率。",
+                source_title="历史教材",
+                source_type="knowledge-base",
+            )
+        ]
+    }
+
+    prompt = build_speaker_notes_input(spec, [rendered_slide], hits)
+
+    assert "蒸汽机与工厂制度" in prompt
+    assert "先引导学生观察教材证据" in prompt
+    assert "历史教材" in prompt
+
+
+def test_speaker_notes_draft_model_accepts_valid_payload() -> None:
+    draft = SpeakerNotesDeckDraft(
+        slides=[
+            SpeakerNotesSlideDraft(
+                slide_number=2,
+                speaker_notes=["先用教材证据导入，再点明蒸汽机与工厂制度的关系。"],
+            )
+        ]
+    )
+
+    assert draft.slides[0].slide_number == 2
+    assert "蒸汽机" in draft.slides[0].speaker_notes[0]

@@ -554,6 +554,16 @@
     .summary-footer strong {
       color: var(--brand);
     }
+    .quality-group {
+      margin-top: 12px;
+      display: grid;
+      gap: 6px;
+    }
+    .quality-group strong {
+      color: var(--brand);
+      font-size: 13px;
+      letter-spacing: 0.02em;
+    }
     .artifact-links {
       display: flex;
       flex-wrap: wrap;

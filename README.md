@@ -48,8 +48,14 @@
 - 基础测试与回归测试
 - 前端工作台 / 预览器分离架构
 - OpenAI `dialog.py` 结构化抽取底座
+- 独立 embedding 网关配置底座
+- 候选证据 AI 重排与证据焦点压缩
 - `planner.py` 大纲生成独立网关接入
 - `planner.py` 逐页策划独立网关接入
+- 单页再生成模型版接入
+- `quality.py` AI 审稿补充层接入
+- `speaker notes / 讲稿` 模型润色层接入
+- 阿里云百炼 `text-embedding-v4` 已接入，兼容网关会自动按小批次分段提交 embedding 请求
 
 未完成：
 
@@ -74,7 +80,13 @@
 - 统一知识库自动打学科 / 学段 / 主题标签，并按标签过滤检索
 - 可选补充联网搜索结果，并在会话内持久化该开关
 - 已为 `dialog.py` 准备 OpenAI Responses API + Structured Outputs 接口底座，当前默认关闭
+- 已为候选检索命中加入 AI 重排层，失败时自动回退到规则重排
 - 已为 `planner.py` 的 LessonOutline 和 SlidePlan 分别准备独立模型网关，不影响 `dialog.py`
+- 已为单页再生成接入模型版改写，当前复用 `slide planner` 网关并保留失败回退
+- 已为 `quality.py` 接入 AI 审稿补充层，当前复用 `planner` 网关并保留失败回退
+- 已为 `speaker notes / 讲稿` 接入模型润色层，当前复用 `slide planner` 网关并保留失败回退
+- 已为知识库 embedding 增加独立配置：`EMBEDDINGS_API_KEY / EMBEDDINGS_BASE_URL / EMBEDDINGS_MODEL`
+- 前端质量区已按“规则问题 / AI 审稿问题”分组展示
 - 生成约束确认清单，并显式确认当前需求边界
 - 资料边界会同时显示“你写的来源约束”和“当前上传/检索到的资料范围”
 - 多轮提交需求时，资料边界类约束会粘性保留；只有你明确给出新的资料边界时才覆盖旧值
@@ -130,7 +142,11 @@ teaching-agent/
       evidence.py
       exporter.py
       openai_dialog.py
+      openai_evidence_rerank.py
       openai_planner.py
+      openai_quality_review.py
+      openai_speaker_notes.py
+      openai_slide_regenerator.py
       openai_slide_planner.py
       parser.py
       planner.py
@@ -170,7 +186,14 @@ teaching-agent/
   scripts/
     check_gateway_raw.py
     check_dialog_provider.py
+    check_evidence_rerank_provider.py
+    check_embedding_provider.py
     check_planner_provider.py
+    check_quality_reviewer_provider.py
+    fetch_public_seed.py
+    run_pipeline_smoke.py
+    check_speaker_notes_provider.py
+    check_slide_regenerator_provider.py
     check_slide_planner_provider.py
     ingest_kb.py
     run_dev.py
@@ -459,14 +482,40 @@ C:\Users\15635\teaching-agent\.venv\Scripts\python.exe -m pytest tests -q
 
 当前状态：
 
-- 已通过 `82` 个测试
+- 已通过 `93` 个测试
 - 仍有 `3` 个第三方依赖 warning（`faiss/swig`），不影响功能
 - 已补好 `.env.example` 和 `dialog.py` 的 OpenAI 接入开关，待填入 `OPENAI_API_KEY` 后启用
 - 已按第三方 OpenAI 兼容网关配置 `OPENAI_BASE_URL` 与 `gemini-3.1-pro-preview`，`dialog.py` 可真实完成结构化抽取
 - `OPENAI_BASE_URL` 应指向兼容 API 根地址，例如 `https://provider.example/v1`，不是控制台页 `/console`
 - 已新增 `planner` 专用网关配置：`PLANNER_API_KEY / PLANNER_BASE_URL / PLANNER_MODEL`
+- 已新增 `evidence rerank` 专用网关配置：`EVIDENCE_RERANK_API_KEY / EVIDENCE_RERANK_BASE_URL / EVIDENCE_RERANK_MODEL`
+- 已新增 `quality review` 专用网关配置：`QUALITY_REVIEW_API_KEY / QUALITY_REVIEW_BASE_URL / QUALITY_REVIEW_MODEL`
 - 已新增 `slide planner` 专用网关配置：`SLIDE_PLANNER_API_KEY / SLIDE_PLANNER_BASE_URL / SLIDE_PLANNER_MODEL`
+- 已新增 `speaker notes` 专用网关配置：`SPEAKER_NOTES_API_KEY / SPEAKER_NOTES_BASE_URL / SPEAKER_NOTES_MODEL`
+- 已新增独立 embedding 配置：`EMBEDDINGS_API_KEY / EMBEDDINGS_BASE_URL / EMBEDDINGS_MODEL / EMBEDDINGS_DIMENSIONS`
+- 兼容网关 embedding 已支持自动分批，避免百炼这类 `batch size <= 10` 的限制导致入库失败
+- 相同资料重复导入时会按 `chunk_id` 自动跳过，避免知识库索引被重复内容污染
+- 第一阶段公开资料现已补到 `100+` 份，统一存放在 `E:\teaching-agent_resources\public_seed`
+- 使用 `text-embedding-v4` 重新导入后，默认知识库已提升到 `12153` 个 chunk
+- 第二阶段历史学科第一批资料已补到 `60` 份，统一存放在 `E:\teaching-agent_resources\subject_seed\history`
+- 第二阶段数学学科第一批资料已补到 `60` 份，统一存放在 `E:\teaching-agent_resources\subject_seed\math`
+- 第二阶段英语学科第一批资料已补到 `60` 份，统一存放在 `E:\teaching-agent_resources\subject_seed\english`
+- 历史、数学与英语学科资料入库后，默认知识库已提升到 `14328` 个 chunk
 - 当前 `dialog.py / LessonOutline / SlidePlan` 三处都统一走第一个中转站，仍保留独立配置键位
+- 当前 `speaker notes / 讲稿` 模型润色默认复用 `slide planner` 网关，也就是当前第一个中转站
+- 当前候选证据 AI 重排默认复用 `planner` 网关；如未单独配置，会自动继承第一个中转站
+- 当前 AI 审稿补充层默认复用 `planner` 网关，但默认只有在“约束已确认”后才会触发
+- 当前单页再生成默认复用 `slide planner` 网关，也就是当前第一个中转站
+
+## 远程桥接上下文
+
+- 已新增远程桥接上下文文件：
+  - `C:\Users\15635\teaching-agent\docs\remote_context.md`
+- 已新增远程工作日志模板：
+  - `C:\Users\15635\teaching-agent\docs\remote_log.md`
+- 飞书桥接到的 Codex 会话不会自动共享当前网页/API 会话历史
+- 如需在飞书里延续当前项目背景，优先让它读取 `remote_context.md`
+- 如需让本地会话回来后快速接上，建议每次远程结束前更新 `remote_log.md`
 - 首页“提交需求”已补回成功状态提示，静态控制按钮统一为 `type="button"`
 - 首页“提交需求”增加独立的内联提交流程，不再依赖主脚本全部初始化完成
 - 首页主脚本中的残留语法片段已清理，前端可正常进入就绪状态并响应提交
@@ -556,6 +605,33 @@ C:\Users\15635\teaching-agent\.venv\Scripts\python.exe -m pytest tests -q
 - 新增 `scripts/check_gateway_raw.py`，用于直接查看中转站 `/chat/completions` 的原始状态码和响应体
 - 新增 `planner.py` 的独立网关接入：当前通过单独配置把 `LessonOutline` 路由到指定中转站
 - 新增 `scripts/check_planner_provider.py`，用于快速验证当前 `planner` 网关能否生成 `LessonOutline`
+- 新增 `scripts/check_evidence_rerank_provider.py`，用于快速验证当前候选证据 AI 重排网关
+- 新增候选证据 AI 重排层：先规则清洗，再用模型对干净候选做二次排序，并把证据焦点回写到 `topic_hint`
 - 新增 `scripts/check_slide_planner_provider.py`，用于快速验证当前 `SlidePlan` 网关能否返回逐页策划草案
+- 新增 `scripts/check_quality_reviewer_provider.py`，用于快速验证当前 AI 审稿补充层
+- 新增 `scripts/check_speaker_notes_provider.py`，用于快速验证当前 `speaker notes / 讲稿` 润色网关
+- 新增 `scripts/check_embedding_provider.py`，用于快速验证当前 embedding 网关
+- 新增 `scripts/fetch_public_seed.py`，用于从公开渠道抓取课程标准、指南和教学标准资料；若 `E:\teaching-agent_resources\public_seed` 存在，则默认写入该目录
+- 新增 `scripts/recycle_legacy_ppt.ps1`，用于把原始资料目录里的老式 `.ppt` 送进 Windows 回收站
+- 新增 `scripts/probe_url.py`，用于临时探查公开网页的正文和链接结构，方便批量补充学科资料
+- 新增 `scripts/fetch_history_seed.py`，用于批量抓取历史学科公开专题资料并落到 `E:\teaching-agent_resources\subject_seed\history`
+- 新增 `scripts/fetch_math_seed.py`，用于批量抓取数学学科公开知识点资料并落到 `E:\teaching-agent_resources\subject_seed\math`
+- 新增 `scripts/fetch_english_seed.py`，用于批量抓取英语学科公开学习资料并落到 `E:\teaching-agent_resources\subject_seed\english`
+- 新增 `scripts/delete_fetched_text_resources.ps1`，用于清理我抓取的 `.txt/.json` 文本型资料，保留 `pdf/pptx/docx/zip`
+- 新增 `scripts/organize_original_seed.py`，用于把 `E:\teaching-agent_resources\original_seed` 中的原始资料按第一阶段/第二阶段与学科类别搬运到对应目录
+- 公开资料抓取脚本已兼容部分站点证书链异常，并在单个来源失败时继续抓取其余来源
+- 公开资料抓取脚本会自动跳过伪装成附件的 HTML 壳页，避免把 `viewer.html` 这类无效页面当资料入库
+- 第一阶段公开补库优先覆盖：学前、义务教育、高中、职教、高教与国家智慧教育平台官方页面
+- 第一阶段公开资料已扩到 `100+` 份原始文件，包含课程标准 PDF、官方解读、平台建设与学前/职教/高教政策材料
+- 默认知识库已重新吸收这批第一阶段资料；在去重和 `text-embedding-v4` 入库后，总量提升到 `12153` 个 chunk
+- 第二阶段历史学科已补入 `60` 份公开专题资料，当前默认知识库总量提升到 `12954` 个 chunk
+- 第二阶段数学学科已补入 `60` 份公开知识点资料，当前默认知识库总量提升到 `13673` 个 chunk
+- 第二阶段英语学科已补入 `60` 份公开学习资料，当前默认知识库总量提升到 `14328` 个 chunk
+- 新增 `scripts/run_pipeline_smoke.py`，用于串联回归“需求 -> 证据 -> 确认 -> 大纲 -> 逐页策划 -> 质量报告”
+- 新增 `scripts/check_slide_regenerator_provider.py`，用于快速验证当前单页再生成网关
 - 保留 `LessonOutline` 与 `SlidePlan` 的双配置结构，但当前运行时统一指向第一个中转站
+- `SlidePlan` 和单页再生成都会在结构生成后追加一层模型化 `speaker notes` 润色，只改口播表达，不改结构和事实
+- 单页再生成优先走模型改写，失败时自动回退到原来的规则版重组
+- 质量报告在硬规则门禁之外新增 AI 审稿补充层，但默认只在约束确认后触发
 - 补充测试并跑通当前全部用例
+- 修复兼容网关 embedding 重建时的两处问题：自动分批提交向量请求，并在 `--reset` 场景下忽略旧索引维度重新建库

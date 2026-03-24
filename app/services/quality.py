@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from app.config import get_settings
 from app.models import QualityIssue, QualityReport, SessionState, SlideType
 from app.models.session import utc_now
 from app.services.evidence import get_selected_retrieval_hits
+from app.services.openai_quality_review import (
+    openai_quality_review_ready,
+    review_quality_with_openai,
+)
 
 
 SEVERITY_PENALTY = {
@@ -65,9 +70,16 @@ def _issue(
     code: str,
     message: str,
     *,
+    origin: str = "rule",
     slide_number: int | None = None,
 ) -> QualityIssue:
-    return QualityIssue(severity=severity, code=code, message=message, slide_number=slide_number)
+    return QualityIssue(
+        severity=severity,
+        code=code,
+        message=message,
+        origin=origin,
+        slide_number=slide_number,
+    )
 
 
 def _contains_keyword(texts: list[str], keywords: tuple[str, ...]) -> bool:
@@ -110,6 +122,21 @@ def _is_requirement_anchored_slide(session: SessionState, slide_type: SlideType,
         return any(anchor and anchor.lower() in combined for anchor in anchors)
 
     return False
+
+
+def _merge_ai_quality_issues(
+    issues: list[QualityIssue],
+    ai_review_issues: list[QualityIssue],
+) -> list[QualityIssue]:
+    merged = list(issues)
+    existing_keys = {(issue.code, issue.slide_number, issue.message) for issue in issues}
+    for issue in ai_review_issues:
+        key = (issue.code, issue.slide_number, issue.message)
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        merged.append(issue)
+    return merged
 
 
 def build_quality_report(session: SessionState) -> QualityReport:
@@ -293,6 +320,36 @@ def build_quality_report(session: SessionState) -> QualityReport:
                         )
                     )
 
+    ai_review_summary: str | None = None
+    settings = get_settings()
+    if (
+        session.teaching_spec is not None
+        and session.slide_plan is not None
+        and session.planning_confirmation.confirmed
+        and openai_quality_review_ready(settings)
+    ):
+        try:
+            ai_review = review_quality_with_openai(
+                session,
+                selected_hits,
+                issues,
+                settings=settings,
+            )
+            ai_review_summary = ai_review.summary
+            ai_issues = [
+                _issue(
+                    issue.severity if issue.severity in {"low", "medium", "high", "critical"} else "medium",
+                    issue.code,
+                    issue.message,
+                    origin="ai",
+                    slide_number=issue.slide_number,
+                )
+                for issue in ai_review.issues
+            ]
+            issues = _merge_ai_quality_issues(issues, ai_issues)
+        except Exception:
+            ai_review_summary = None
+
     score = 100
     for issue in issues:
         score -= SEVERITY_PENALTY.get(issue.severity, 6)
@@ -311,6 +368,8 @@ def build_quality_report(session: SessionState) -> QualityReport:
         summary = "当前课件链路已通过基础质量检查，可继续导出和展示。"
     else:
         summary = f"发现 {len(issues)} 个质量检查项，当前状态为 {status}。"
+    if ai_review_summary:
+        summary = f"{summary} AI审稿：{ai_review_summary}"
 
     return QualityReport(
         status=status,

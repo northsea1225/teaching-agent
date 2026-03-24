@@ -8,8 +8,24 @@ from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.main import app
-from app.models import Citation, InteractionMode, RetrievalHit, SessionState, SlidePlan, SlidePlanItem, SlideType, TeachingSpec
+from app.models import (
+    Citation,
+    InteractionMode,
+    LessonOutline,
+    LessonOutlineSection,
+    RetrievalHit,
+    SessionState,
+    SlidePlan,
+    SlidePlanItem,
+    SlideType,
+    TeachingSpec,
+)
 from app.services.evidence import get_selected_retrieval_hits, set_excluded_retrieval_hits
+from app.services.openai_slide_regenerator import SlideRegenerationDraft
+from app.services.openai_speaker_notes import (
+    SpeakerNotesDeckDraft,
+    SpeakerNotesSlideDraft,
+)
 from app.services.planner import fetch_retrieval_hits, generate_lesson_outline, generate_slide_plan, regenerate_slide_in_session
 from app.services.quality import build_quality_report
 
@@ -297,6 +313,91 @@ def test_fetch_retrieval_hits_filters_cross_subject_contamination(monkeypatch) -
     assert "template-bad" not in chunk_ids
 
 
+def test_fetch_retrieval_hits_uses_ai_evidence_rerank_when_available(monkeypatch) -> None:
+    spec = TeachingSpec(
+        education_stage="middle-school",
+        subject="history",
+        lesson_title="工业革命",
+        additional_requirements=["加入材料分析和讨论"],
+    )
+
+    def fake_kb_search(self, query: str, top_k: int, **kwargs) -> list[RetrievalHit]:
+        return [
+            RetrievalHit(
+                chunk_id="history-core",
+                content="工业革命推动蒸汽机和工厂制度发展，并带来城市化影响。",
+                score=9.0,
+                source_type="knowledge-base",
+                source_title="工业革命教材第12页",
+            ),
+            RetrievalHit(
+                chunk_id="history-side",
+                content="工人生活与工厂纪律变化也影响了社会结构。",
+                score=8.0,
+                source_type="knowledge-base",
+                source_title="工业革命材料包",
+            ),
+        ]
+
+    def fake_ai_rerank(spec_arg, hits: list[RetrievalHit], *, top_k: int, settings=None) -> list[RetrievalHit]:
+        assert spec_arg.lesson_title == "工业革命"
+        assert top_k == 2
+        return [
+            hits[1].model_copy(update={"topic_hint": "社会结构变化"}),
+            hits[0].model_copy(update={"topic_hint": "蒸汽机与工厂制度"}),
+        ]
+
+    monkeypatch.setattr("app.services.planner.LocalKnowledgeBase.search", fake_kb_search)
+    monkeypatch.setattr("app.services.planner.search_web_hits", lambda query, top_k: [])
+    monkeypatch.setattr("app.services.planner.openai_evidence_rerank_ready", lambda settings: True)
+    monkeypatch.setattr("app.services.planner.rerank_retrieval_hits_with_openai", fake_ai_rerank)
+
+    hits = fetch_retrieval_hits(spec, top_k=2, use_web_search=False)
+
+    assert [hit.chunk_id for hit in hits] == ["history-side", "history-core"]
+    assert hits[0].topic_hint == "社会结构变化"
+
+
+def test_fetch_retrieval_hits_falls_back_to_rule_rerank_when_ai_rerank_fails(monkeypatch) -> None:
+    spec = TeachingSpec(
+        education_stage="middle-school",
+        subject="history",
+        lesson_title="工业革命",
+        additional_requirements=["加入材料分析"],
+    )
+
+    def fake_kb_search(self, query: str, top_k: int, **kwargs) -> list[RetrievalHit]:
+        return [
+            RetrievalHit(
+                chunk_id="history-anchored",
+                content="工业革命推动蒸汽机和工厂制度发展，并带来城市化影响。",
+                score=5.0,
+                source_type="knowledge-base",
+                source_title="工业革命教材第12页",
+            ),
+            RetrievalHit(
+                chunk_id="history-generic",
+                content="社会结构变化会影响劳动组织和城市生活。",
+                score=9.0,
+                source_type="knowledge-base",
+                source_title="教材第13页",
+            ),
+        ]
+
+    monkeypatch.setattr("app.services.planner.LocalKnowledgeBase.search", fake_kb_search)
+    monkeypatch.setattr("app.services.planner.search_web_hits", lambda query, top_k: [])
+    monkeypatch.setattr("app.services.planner.openai_evidence_rerank_ready", lambda settings: True)
+    monkeypatch.setattr(
+        "app.services.planner.rerank_retrieval_hits_with_openai",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("gateway down")),
+    )
+
+    hits = fetch_retrieval_hits(spec, top_k=2, use_web_search=False)
+
+    assert hits
+    assert hits[0].chunk_id == "history-anchored"
+
+
 def test_quality_report_flags_activity_and_summary_structure_gaps() -> None:
     spec = TeachingSpec(
         education_stage="high-school",
@@ -442,6 +543,177 @@ def test_regenerate_slide_stays_within_current_slide_citations() -> None:
     assert any("蒸汽机" in point for point in regenerated.key_points)
     assert all("拿破仑战争" not in point for point in regenerated.key_points)
     assert any("仅基于当前页引用和既有要点重组" in note for note in regenerated.revision_notes)
+
+
+def test_regenerate_slide_prefers_model_when_gateway_is_ready(monkeypatch) -> None:
+    session = SessionState(
+        title="regenerate-llm",
+        teaching_spec=TeachingSpec(
+            education_stage="middle-school",
+            subject="history",
+            lesson_title="工业革命",
+            learning_objectives=[{"description": "理解蒸汽机与工厂制度的关系"}],
+            additional_requirements=["只使用上传资料和检索命中"],
+        ),
+        retrieval_hits=[
+            RetrievalHit(
+                chunk_id="keep",
+                asset_id="hist-keep",
+                content="蒸汽机推动工厂制度形成，并带来城市化影响。",
+                source_type="knowledge-base",
+                source_title="教材第12页",
+                topic_hint="蒸汽机与工厂制度",
+            ),
+        ],
+        slide_plan=SlidePlan(
+            title="工业革命",
+            slides=[
+                SlidePlanItem(
+                    slide_number=1,
+                    title="工业革命核心线索",
+                    slide_type=SlideType.CONCEPT,
+                    goal="说明蒸汽机与工厂制度的关系",
+                    key_points=["蒸汽机推动工厂制度形成"],
+                    speaker_notes=["围绕教材第12页讲解蒸汽机与工厂制度"],
+                    citations=[Citation(asset_id="hist-keep", chunk_id="keep", note="教材第12页")],
+                )
+            ],
+        ),
+    )
+
+    monkeypatch.setattr("app.services.planner.openai_slide_regenerator_ready", lambda settings: True)
+    monkeypatch.setattr(
+        "app.services.planner.generate_slide_regeneration_draft_with_openai",
+        lambda *args, **kwargs: SlideRegenerationDraft(
+            title="工业革命的关键驱动",
+            goal="更清楚地说明蒸汽机与工厂制度的因果关系",
+            slide_type="activity",
+            key_points=["根据教材证据概括蒸汽机带来的生产变化", "讨论工厂制度为何改变劳动组织"],
+            visual_brief=["左侧证据卡片，右侧讨论任务区"],
+            speaker_notes=["先回顾教材证据，再组织学生讨论工厂制度变化。"],
+            interaction_mode="discussion",
+            layout_hint="双栏证据+讨论布局",
+            revision_notes=["保留教材证据，不扩展课外史实"],
+        ),
+    )
+
+    updated = regenerate_slide_in_session(session, 1, instructions="改成讨论页")
+    regenerated = updated.slide_plan.slides[0]
+
+    assert regenerated.title == "工业革命的关键驱动"
+    assert regenerated.slide_type == SlideType.ACTIVITY
+    assert regenerated.interaction_mode == InteractionMode.DISCUSSION
+    assert any(citation.asset_id == "hist-keep" for citation in regenerated.citations)
+    assert any("讨论工厂制度" in point for point in regenerated.key_points)
+    assert any("模型单页再生成" in note for note in regenerated.revision_notes)
+
+
+def test_generate_slide_plan_polishes_speaker_notes_when_gateway_is_ready(monkeypatch) -> None:
+    spec = TeachingSpec(
+        education_stage="middle-school",
+        subject="history",
+        lesson_title="工业革命",
+        learning_objectives=[{"description": "理解蒸汽机与工厂制度的关系"}],
+    )
+    outline = LessonOutline(
+        title="工业革命 lesson outline",
+        sections=[
+            LessonOutlineSection(
+                title="核心概念",
+                goal="说明蒸汽机与工厂制度的关系",
+                bullet_points=["蒸汽机推动工厂制度形成", "工业革命改变生产组织"],
+                estimated_slides=1,
+                recommended_slide_type=SlideType.CONCEPT,
+            )
+        ],
+    )
+    hits = [
+        RetrievalHit(
+            chunk_id="hist-1",
+            asset_id="hist-1",
+            content="蒸汽机推动工厂制度形成，并改变劳动组织方式。",
+            source_type="knowledge-base",
+            source_title="历史教材",
+        )
+    ]
+
+    monkeypatch.setattr("app.services.planner.openai_slide_planner_ready", lambda settings: False)
+    monkeypatch.setattr("app.services.planner.openai_speaker_notes_ready", lambda settings: True)
+    monkeypatch.setattr(
+        "app.services.planner.polish_speaker_notes_with_openai",
+        lambda *args, **kwargs: SpeakerNotesDeckDraft(
+            slides=[
+                SpeakerNotesSlideDraft(
+                    slide_number=1,
+                    speaker_notes=["先结合教材证据说明蒸汽机如何推动工厂制度形成，再引导学生概括生产组织变化。"],
+                )
+            ]
+        ),
+    )
+
+    slide_plan = generate_slide_plan(spec, outline, hits, allow_llm=True)
+
+    assert slide_plan.slides[0].speaker_notes[0].startswith("先结合教材证据说明蒸汽机")
+    assert any("模型润色讲稿" in note for note in slide_plan.slides[0].revision_notes)
+
+
+def test_regenerate_slide_polishes_speaker_notes_when_gateway_is_ready(monkeypatch) -> None:
+    session = SessionState(
+        title="regenerate-notes",
+        teaching_spec=TeachingSpec(
+            education_stage="middle-school",
+            subject="history",
+            lesson_title="工业革命",
+            learning_objectives=[{"description": "理解蒸汽机与工厂制度的关系"}],
+        ),
+        retrieval_hits=[
+            RetrievalHit(
+                chunk_id="keep",
+                asset_id="hist-keep",
+                content="蒸汽机推动工厂制度形成，并带来城市化影响。",
+                source_type="knowledge-base",
+                source_title="教材第12页",
+            ),
+        ],
+        slide_plan=SlidePlan(
+            title="工业革命",
+            slides=[
+                SlidePlanItem(
+                    slide_number=1,
+                    title="工业革命核心线索",
+                    slide_type=SlideType.CONCEPT,
+                    goal="说明蒸汽机与工厂制度的关系",
+                    key_points=["蒸汽机推动工厂制度形成"],
+                    speaker_notes=["围绕教材第12页讲解蒸汽机与工厂制度。"],
+                    citations=[Citation(asset_id="hist-keep", chunk_id="keep", note="教材第12页")],
+                )
+            ],
+        ),
+    )
+
+    monkeypatch.setattr("app.services.planner.openai_slide_regenerator_ready", lambda settings: True)
+    monkeypatch.setattr(
+        "app.services.planner.generate_slide_regeneration_draft_with_openai",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("force fallback")),
+    )
+    monkeypatch.setattr("app.services.planner.openai_speaker_notes_ready", lambda settings: True)
+    monkeypatch.setattr(
+        "app.services.planner.polish_speaker_notes_with_openai",
+        lambda *args, **kwargs: SpeakerNotesDeckDraft(
+            slides=[
+                SpeakerNotesSlideDraft(
+                    slide_number=1,
+                    speaker_notes=["先展示教材第12页证据，再引导学生概括蒸汽机如何改变工厂制度。"],
+                )
+            ]
+        ),
+    )
+
+    updated = regenerate_slide_in_session(session, 1, instructions="增加一句过渡说明")
+    regenerated = updated.slide_plan.slides[0]
+
+    assert regenerated.speaker_notes[0].startswith("先展示教材第12页证据")
+    assert any("模型润色讲稿" in note for note in regenerated.revision_notes)
 
 
 def test_planner_outline_endpoint_uses_kb_hits() -> None:

@@ -37,13 +37,31 @@ class Settings:
     planner_base_url: str
     planner_model: str
     planner_timeout_seconds: float
+    use_openai_evidence_rerank: bool
+    evidence_rerank_api_key: str
+    evidence_rerank_base_url: str
+    evidence_rerank_model: str
+    evidence_rerank_timeout_seconds: float
+    use_openai_quality_review: bool
+    quality_review_api_key: str
+    quality_review_base_url: str
+    quality_review_model: str
+    quality_review_timeout_seconds: float
     use_openai_slide_planner: bool
     slide_planner_api_key: str
     slide_planner_base_url: str
     slide_planner_model: str
     slide_planner_timeout_seconds: float
+    use_openai_speaker_notes: bool
+    speaker_notes_api_key: str
+    speaker_notes_base_url: str
+    speaker_notes_model: str
+    speaker_notes_timeout_seconds: float
     embeddings_backend: str
+    embeddings_api_key: str
+    embeddings_base_url: str
     embeddings_model: str
+    embeddings_dimensions: int | None
     local_embedding_dim: int
     transcribe_model: str
     rag_chunk_size: int
@@ -83,13 +101,95 @@ def get_settings() -> Settings:
         planner_base_url=os.getenv("PLANNER_BASE_URL", "").strip(),
         planner_model=os.getenv("PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-5.4")).strip(),
         planner_timeout_seconds=float(os.getenv("PLANNER_TIMEOUT_SECONDS", "45")),
+        use_openai_evidence_rerank=_get_bool(
+            "USE_OPENAI_EVIDENCE_RERANK",
+            default=_get_bool("USE_OPENAI_PLANNER", default=False),
+        ),
+        evidence_rerank_api_key=os.getenv(
+            "EVIDENCE_RERANK_API_KEY",
+            os.getenv("PLANNER_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+        ).strip(),
+        evidence_rerank_base_url=os.getenv(
+            "EVIDENCE_RERANK_BASE_URL",
+            os.getenv("PLANNER_BASE_URL", os.getenv("OPENAI_BASE_URL", "")),
+        ).strip(),
+        evidence_rerank_model=os.getenv(
+            "EVIDENCE_RERANK_MODEL",
+            os.getenv("PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-5.4")),
+        ).strip(),
+        evidence_rerank_timeout_seconds=float(
+            os.getenv(
+                "EVIDENCE_RERANK_TIMEOUT_SECONDS",
+                os.getenv("PLANNER_TIMEOUT_SECONDS", "45"),
+            )
+        ),
+        use_openai_quality_review=_get_bool("USE_OPENAI_QUALITY_REVIEW", default=False),
+        quality_review_api_key=os.getenv(
+            "QUALITY_REVIEW_API_KEY",
+            os.getenv("PLANNER_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+        ).strip(),
+        quality_review_base_url=os.getenv(
+            "QUALITY_REVIEW_BASE_URL",
+            os.getenv("PLANNER_BASE_URL", os.getenv("OPENAI_BASE_URL", "")),
+        ).strip(),
+        quality_review_model=os.getenv(
+            "QUALITY_REVIEW_MODEL",
+            os.getenv("PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-5.4")),
+        ).strip(),
+        quality_review_timeout_seconds=float(
+            os.getenv(
+                "QUALITY_REVIEW_TIMEOUT_SECONDS",
+                os.getenv("PLANNER_TIMEOUT_SECONDS", "45"),
+            )
+        ),
         use_openai_slide_planner=_get_bool("USE_OPENAI_SLIDE_PLANNER", default=False),
         slide_planner_api_key=os.getenv("SLIDE_PLANNER_API_KEY", "").strip(),
         slide_planner_base_url=os.getenv("SLIDE_PLANNER_BASE_URL", "").strip(),
         slide_planner_model=os.getenv("SLIDE_PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-5.4")).strip(),
         slide_planner_timeout_seconds=float(os.getenv("SLIDE_PLANNER_TIMEOUT_SECONDS", "60")),
+        use_openai_speaker_notes=_get_bool("USE_OPENAI_SPEAKER_NOTES", default=False),
+        speaker_notes_api_key=os.getenv(
+            "SPEAKER_NOTES_API_KEY",
+            os.getenv(
+                "SLIDE_PLANNER_API_KEY",
+                os.getenv("PLANNER_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+            ),
+        ).strip(),
+        speaker_notes_base_url=os.getenv(
+            "SPEAKER_NOTES_BASE_URL",
+            os.getenv(
+                "SLIDE_PLANNER_BASE_URL",
+                os.getenv("PLANNER_BASE_URL", os.getenv("OPENAI_BASE_URL", "")),
+            ),
+        ).strip(),
+        speaker_notes_model=os.getenv(
+            "SPEAKER_NOTES_MODEL",
+            os.getenv(
+                "SLIDE_PLANNER_MODEL",
+                os.getenv("PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-5.4")),
+            ),
+        ).strip(),
+        speaker_notes_timeout_seconds=float(
+            os.getenv(
+                "SPEAKER_NOTES_TIMEOUT_SECONDS",
+                os.getenv("SLIDE_PLANNER_TIMEOUT_SECONDS", "60"),
+            )
+        ),
         embeddings_backend=os.getenv("EMBEDDINGS_BACKEND", "local"),
+        embeddings_api_key=os.getenv(
+            "EMBEDDINGS_API_KEY",
+            os.getenv("OPENAI_API_KEY", ""),
+        ).strip(),
+        embeddings_base_url=os.getenv(
+            "EMBEDDINGS_BASE_URL",
+            os.getenv("OPENAI_BASE_URL", ""),
+        ).strip(),
         embeddings_model=os.getenv("EMBEDDINGS_MODEL", "text-embedding-3-small"),
+        embeddings_dimensions=(
+            int(os.getenv("EMBEDDINGS_DIMENSIONS", "").strip())
+            if os.getenv("EMBEDDINGS_DIMENSIONS", "").strip()
+            else None
+        ),
         local_embedding_dim=int(os.getenv("LOCAL_EMBEDDING_DIM", "256")),
         transcribe_model=os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
         rag_chunk_size=int(os.getenv("RAG_CHUNK_SIZE", "400")),

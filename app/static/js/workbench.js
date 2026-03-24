@@ -480,13 +480,25 @@
         qualityBox.textContent = "质量报告将在生成策划后出现。";
         return;
       }
+      const issues = Array.isArray(report.issues) ? report.issues : [];
+      const ruleIssues = issues.filter((issue) => (issue.origin || "rule") !== "ai");
+      const aiIssues = issues.filter((issue) => issue.origin === "ai");
+      const renderIssueGroup = (title, items, emptyCopy) => `
+        <div class="quality-group">
+          <strong>${escapeHtml(title)}</strong>
+          ${items.length
+            ? items.slice(0, 5).map((issue) => `
+                <div>${escapeHtml(issue.severity.toUpperCase())} · ${escapeHtml(issue.message)}${issue.slide_number ? `（第 ${escapeHtml(String(issue.slide_number))} 页）` : ""}</div>
+              `).join("")
+            : `<div>${escapeHtml(emptyCopy)}</div>`}
+        </div>
+      `;
       qualityBox.innerHTML = `
         <strong>质量检查</strong><br>
         状态：${escapeHtml(report.status || "pending")} · 分数：${escapeHtml(String(report.score ?? "-"))}<br>
         ${escapeHtml(report.summary || "暂无质量摘要。")}<br><br>
-        ${(report.issues || []).slice(0, 5).map((issue) => `
-          <div>${escapeHtml(issue.severity.toUpperCase())} · ${escapeHtml(issue.message)}${issue.slide_number ? `（第 ${escapeHtml(String(issue.slide_number))} 页）` : ""}</div>
-        `).join("") || '<div>暂无检查问题。</div>'}
+        ${renderIssueGroup("规则问题", ruleIssues, "暂无规则问题。")}
+        ${renderIssueGroup("AI 审稿问题", aiIssues, "暂无 AI 审稿补充意见。")}
       `;
     }
 

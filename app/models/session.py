@@ -83,6 +83,7 @@ class QualityIssue(AppModel):
     severity: str
     code: str
     message: str
+    origin: str = "rule"
     slide_number: int | None = None
 
 

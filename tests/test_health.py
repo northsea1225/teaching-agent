@@ -81,6 +81,7 @@ def test_frontend_static_assets() -> None:
     assert "text/css" in workbench_css.headers["content-type"]
     assert ".svg-thumb.nearby" in workbench_css.text
     assert ".svg-thumb.muted" in workbench_css.text
+    assert ".quality-group" in workbench_css.text
     assert "preview-swap" in workbench_css.text
     assert "thumbs-refresh" in workbench_css.text
 
@@ -89,6 +90,8 @@ def test_frontend_static_assets() -> None:
     assert "javascript" in workbench_js.headers["content-type"]
     assert "window.__submitDemand" in workbench_js.text
     assert "window.renderPayload" in workbench_js.text
+    assert "规则问题" in workbench_js.text
+    assert "AI 审稿问题" in workbench_js.text
     assert '/api/evidence/selection' in workbench_js.text
     assert '/api/evidence/refresh' in workbench_js.text
     assert "split(/[；;\\\\n]/)" in workbench_js.text

@@ -175,15 +175,42 @@ class LocalHashEmbeddingProvider:
 
 
 class OpenAIEmbeddingProvider:
-    def __init__(self, api_key: str, model: str) -> None:
-        self.client = OpenAI(api_key=api_key)
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        base_url: str | None = None,
+        dimensions: int | None = None,
+        batch_size: int | None = None,
+    ) -> None:
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self.client = OpenAI(**client_kwargs)
         self.model = model
-        self.name = f"openai:{model}"
+        self.dimensions = dimensions
+        self.batch_size = max(1, batch_size or (10 if base_url else 64))
+        if base_url:
+            self.name = f"openai-compatible:{model}"
+        else:
+            self.name = f"openai:{model}"
         self.dimension: int | None = None
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
-        response = self.client.embeddings.create(model=self.model, input=texts)
-        vectors = np.array([item.embedding for item in response.data], dtype=np.float32)
+        batches: list[np.ndarray] = []
+        for start in range(0, len(texts), self.batch_size):
+            request_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "input": texts[start : start + self.batch_size],
+            }
+            if self.dimensions is not None:
+                request_kwargs["dimensions"] = self.dimensions
+            response = self.client.embeddings.create(**request_kwargs)
+            batch_vectors = np.array([item.embedding for item in response.data], dtype=np.float32)
+            batches.append(batch_vectors)
+
+        vectors = np.vstack(batches) if batches else np.zeros((0, 0), dtype=np.float32)
         if self.dimension is None:
             self.dimension = vectors.shape[1]
         faiss.normalize_L2(vectors)
@@ -213,11 +240,13 @@ class LocalKnowledgeBase:
         self.metadata_path = self.store_dir / METADATA_FILENAME
         self.manifest_path = self.store_dir / MANIFEST_FILENAME
 
-        if backend == "openai" and settings.openai_api_key:
+        if backend == "openai" and settings.embeddings_api_key:
             self.embedding_provider: OpenAIEmbeddingProvider | LocalHashEmbeddingProvider = (
                 OpenAIEmbeddingProvider(
-                    api_key=settings.openai_api_key,
+                    api_key=settings.embeddings_api_key,
                     model=settings.embeddings_model,
+                    base_url=settings.embeddings_base_url or None,
+                    dimensions=settings.embeddings_dimensions,
                 )
             )
             self.dimension = None
@@ -345,13 +374,20 @@ class LocalKnowledgeBase:
         return records
 
     def ingest_paths(self, paths: list[Path], reset: bool = False) -> dict[str, Any]:
-        self._load()
         if reset:
-            self._reset()
+            self.index = faiss.IndexFlatIP(self.dimension) if self.dimension is not None else None
+            self.metadata = []
+        elif self.index is None:
+            if self.index_path.exists() and self.metadata_path.exists():
+                self._load()
+            else:
+                self.index = faiss.IndexFlatIP(self.dimension) if self.dimension is not None else None
+                self.metadata = []
 
         processed_files = 0
         skipped_files: list[str] = []
         new_records: list[dict[str, Any]] = []
+        existing_chunk_ids = {str(item.get("chunk_id")) for item in self.metadata if item.get("chunk_id")}
 
         for path in paths:
             try:
@@ -365,8 +401,18 @@ class LocalKnowledgeBase:
                 skipped_files.append(str(path))
                 continue
 
+            fresh_records = [
+                record for record in records
+                if str(record.get("chunk_id")) not in existing_chunk_ids
+            ]
+            for record in fresh_records:
+                existing_chunk_ids.add(str(record.get("chunk_id")))
+            if not fresh_records:
+                skipped_files.append(str(path))
+                continue
+
             processed_files += 1
-            new_records.extend(records)
+            new_records.extend(fresh_records)
 
         if new_records:
             vectors = self.embedding_provider.embed_texts(
