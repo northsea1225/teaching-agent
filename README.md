@@ -635,3 +635,4 @@ C:\Users\15635\teaching-agent\.venv\Scripts\python.exe -m pytest tests -q
 - 质量报告在硬规则门禁之外新增 AI 审稿补充层，但默认只在约束确认后触发
 - 补充测试并跑通当前全部用例
 - 修复兼容网关 embedding 重建时的两处问题：自动分批提交向量请求，并在 `--reset` 场景下忽略旧索引维度重新建库
+好长的README
