@@ -495,12 +495,13 @@ C:\Users\15635\teaching-agent\.venv\Scripts\python.exe -m pytest tests -q
 - 已新增独立 embedding 配置：`EMBEDDINGS_API_KEY / EMBEDDINGS_BASE_URL / EMBEDDINGS_MODEL / EMBEDDINGS_DIMENSIONS`
 - 兼容网关 embedding 已支持自动分批，避免百炼这类 `batch size <= 10` 的限制导致入库失败
 - 相同资料重复导入时会按 `chunk_id` 自动跳过，避免知识库索引被重复内容污染
-- 第一阶段公开资料现已补到 `100+` 份，统一存放在 `E:\teaching-agent_resources\public_seed`
-- 使用 `text-embedding-v4` 重新导入后，默认知识库已提升到 `12153` 个 chunk
-- 第二阶段历史学科第一批资料已补到 `60` 份，统一存放在 `E:\teaching-agent_resources\subject_seed\history`
-- 第二阶段数学学科第一批资料已补到 `60` 份，统一存放在 `E:\teaching-agent_resources\subject_seed\math`
-- 第二阶段英语学科第一批资料已补到 `60` 份，统一存放在 `E:\teaching-agent_resources\subject_seed\english`
-- 历史、数学与英语学科资料入库后，默认知识库已提升到 `14328` 个 chunk
+- 第一阶段资料当前保留为官方 `PDF` 类资料，统一存放在 `E:\teaching-agent_resources\public_seed`
+- 默认知识库当前只使用 `E:\teaching-agent_resources\public_seed` 与 `E:\teaching-agent_resources\subject_seed` 里的非文本资料，并统一使用 `text-embedding-v4`
+- 已从百度网盘历史目录导入 `124` 份教学设计与 `172` 份课件，统一存放在 `E:\teaching-agent_resources\subject_seed\history`
+- 导入时已删除 `10` 个视频文件；历史学科当前有效资料为 `292` 份，其中 `119` 份 `docx`、`173` 份 `pptx`
+- 已从 `D:\BaiduNetdiskDownload` 英语资料中整理出 `438` 个源文件，迁移 `222` 份教学设计和 `215` 份课件到 `E:\teaching-agent_resources\subject_seed\english`
+- 当前英语学科已确认入库 `108` 份 `docx` 与 `64` 份 `pptx`；老式 `.doc/.ppt` 原件保留但暂未入库
+- 当前默认知识库总量为 `20853` 个 chunk
 - 当前 `dialog.py / LessonOutline / SlidePlan` 三处都统一走第一个中转站，仍保留独立配置键位
 - 当前 `speaker notes / 讲稿` 模型润色默认复用 `slide planner` 网关，也就是当前第一个中转站
 - 当前候选证据 AI 重排默认复用 `planner` 网关；如未单独配置，会自动继承第一个中转站
@@ -619,14 +620,23 @@ C:\Users\15635\teaching-agent\.venv\Scripts\python.exe -m pytest tests -q
 - 新增 `scripts/fetch_english_seed.py`，用于批量抓取英语学科公开学习资料并落到 `E:\teaching-agent_resources\subject_seed\english`
 - 新增 `scripts/delete_fetched_text_resources.ps1`，用于清理我抓取的 `.txt/.json` 文本型资料，保留 `pdf/pptx/docx/zip`
 - 新增 `scripts/organize_original_seed.py`，用于把 `E:\teaching-agent_resources\original_seed` 中的原始资料按第一阶段/第二阶段与学科类别搬运到对应目录
+- 新增 `scripts/import_history_baidu_seed.py`，用于把百度网盘下载的历史课件/教案去视频、去重后迁移到 `E:\teaching-agent_resources\subject_seed\history`
+- 新增 `scripts/import_english_baidu_seed.py`，用于把百度网盘下载的英语课件/教案去重后迁移到 `E:\teaching-agent_resources\subject_seed\english`
+- 新增 `scripts/inspect_baidu_history_dirs.py`，用于统计百度网盘历史资料目录中的文件数量、体积与扩展名分布
+- 新增 `scripts/ingest_supported_seed.py`，用于按支持格式和批次把 `pdf/docx/pptx` 资料稳定导入知识库
+- 新增 `scripts/summarize_kb_sources.py`，用于按来源路径汇总当前向量库里已经入库的 chunk 与文件数量
 - 公开资料抓取脚本已兼容部分站点证书链异常，并在单个来源失败时继续抓取其余来源
 - 公开资料抓取脚本会自动跳过伪装成附件的 HTML 壳页，避免把 `viewer.html` 这类无效页面当资料入库
 - 第一阶段公开补库优先覆盖：学前、义务教育、高中、职教、高教与国家智慧教育平台官方页面
 - 第一阶段公开资料已扩到 `100+` 份原始文件，包含课程标准 PDF、官方解读、平台建设与学前/职教/高教政策材料
-- 默认知识库已重新吸收这批第一阶段资料；在去重和 `text-embedding-v4` 入库后，总量提升到 `12153` 个 chunk
-- 第二阶段历史学科已补入 `60` 份公开专题资料，当前默认知识库总量提升到 `12954` 个 chunk
-- 第二阶段数学学科已补入 `60` 份公开知识点资料，当前默认知识库总量提升到 `13673` 个 chunk
-- 第二阶段英语学科已补入 `60` 份公开学习资料，当前默认知识库总量提升到 `14328` 个 chunk
+- 默认知识库已按当前保留的 `public_seed + subject_seed` 非文本资料重建，重建后基线为 `6924` 个 chunk
+- 新导入的百度网盘历史资料共 `306` 个文件，其中迁移进历史资料目录 `296` 个、删除视频 `10` 个、重复文件 `0` 个
+- 当前历史学科已成功入库 `292` 份受支持资料，贡献 `7549` 个 chunk；其中 `E:\teaching-agent_resources\subject_seed\history\教学设计` 为 `119` 份 `docx`，`E:\teaching-agent_resources\subject_seed\history\课件` 为 `167` 份 `pptx`
+- 另有 `5` 份老式 `.doc` 已保留原件但暂未入库
+- 当前默认知识库总量已提升到 `14102` 个 chunk
+- 已从 `D:\BaiduNetdiskDownload` 英语资料中整理出 `438` 个源文件，迁移 `222` 份教学设计和 `215` 份课件到 `E:\teaching-agent_resources\subject_seed\english`，删除重复文件 `1` 个，未发现视频文件
+- 当前英语学科已确认入库 `108` 份 `docx` 教学设计与 `64` 份 `pptx` 课件；老式 `.doc/.ppt` 原件保留但暂未入库
+- 当前默认知识库总量已提升到 `20853` 个 chunk
 - 新增 `scripts/run_pipeline_smoke.py`，用于串联回归“需求 -> 证据 -> 确认 -> 大纲 -> 逐页策划 -> 质量报告”
 - 新增 `scripts/check_slide_regenerator_provider.py`，用于快速验证当前单页再生成网关
 - 保留 `LessonOutline` 与 `SlidePlan` 的双配置结构，但当前运行时统一指向第一个中转站
