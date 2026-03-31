@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import os
 from pathlib import Path
 import shutil
 from uuid import uuid4
@@ -20,6 +22,32 @@ def _make_project_test_dir(base: Path) -> Path:
     path = base / f"_rag_tests_{uuid4().hex}"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+@contextlib.contextmanager
+def _force_local_embeddings():
+    original_values = {
+        "EMBEDDINGS_BACKEND": os.environ.get("EMBEDDINGS_BACKEND"),
+        "EMBEDDINGS_API_KEY": os.environ.get("EMBEDDINGS_API_KEY"),
+        "EMBEDDINGS_BASE_URL": os.environ.get("EMBEDDINGS_BASE_URL"),
+        "EMBEDDINGS_MODEL": os.environ.get("EMBEDDINGS_MODEL"),
+        "EMBEDDINGS_DIMENSIONS": os.environ.get("EMBEDDINGS_DIMENSIONS"),
+    }
+    os.environ["EMBEDDINGS_BACKEND"] = "local"
+    os.environ["EMBEDDINGS_API_KEY"] = ""
+    os.environ["EMBEDDINGS_BASE_URL"] = ""
+    os.environ["EMBEDDINGS_MODEL"] = "local-hash"
+    os.environ.pop("EMBEDDINGS_DIMENSIONS", None)
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        for key, value in original_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        get_settings.cache_clear()
 
 
 class _FakeEmbeddingRecord:
@@ -119,30 +147,31 @@ def test_kb_api_ingest_and_search() -> None:
             encoding="utf-8",
         )
 
-        ingest_response = client.post(
-            "/api/kb/ingest",
-            json={
-                "source_dir": str(source_dir),
-                "include_parsed_assets": False,
-                "reset": True,
-                "store_namespace": namespace,
-            },
-        )
-        assert ingest_response.status_code == 200
-        assert ingest_response.json()["stats"]["processed_files"] == 1
+        with _force_local_embeddings():
+            ingest_response = client.post(
+                "/api/kb/ingest",
+                json={
+                    "source_dir": str(source_dir),
+                    "include_parsed_assets": False,
+                    "reset": True,
+                    "store_namespace": namespace,
+                },
+            )
+            assert ingest_response.status_code == 200
+            assert ingest_response.json()["stats"]["processed_files"] == 1
 
-        search_response = client.post(
-            "/api/kb/search",
-            json={
-                "query": "现在完成时",
-                "top_k": 3,
-                "store_namespace": namespace,
-            },
-        )
-        assert search_response.status_code == 200
-        payload = search_response.json()
-        assert payload["count"] >= 1
-        assert "现在完成时" in payload["hits"][0]["content"]
+            search_response = client.post(
+                "/api/kb/search",
+                json={
+                    "query": "现在完成时",
+                    "top_k": 3,
+                    "store_namespace": namespace,
+                },
+            )
+            assert search_response.status_code == 200
+            payload = search_response.json()
+            assert payload["count"] >= 1
+            assert "现在完成时" in payload["hits"][0]["content"]
     finally:
         shutil.rmtree(source_dir, ignore_errors=True)
         shutil.rmtree(settings.vector_store_dir / namespace, ignore_errors=True)
@@ -198,31 +227,32 @@ def test_kb_api_search_supports_metadata_filters() -> None:
             encoding="utf-8",
         )
 
-        ingest_response = client.post(
-            "/api/kb/ingest",
-            json={
-                "source_dir": str(source_dir),
-                "reset": True,
-                "store_namespace": namespace,
-            },
-        )
-        assert ingest_response.status_code == 200
+        with _force_local_embeddings():
+            ingest_response = client.post(
+                "/api/kb/ingest",
+                json={
+                    "source_dir": str(source_dir),
+                    "reset": True,
+                    "store_namespace": namespace,
+                },
+            )
+            assert ingest_response.status_code == 200
 
-        search_response = client.post(
-            "/api/kb/search",
-            json={
-                "query": "变化",
-                "top_k": 5,
-                "store_namespace": namespace,
-                "subject_filter": ["history"],
-                "topic_keywords": ["工业革命"],
-            },
-        )
-        assert search_response.status_code == 200
-        payload = search_response.json()
-        assert payload["count"] >= 1
-        assert payload["hits"][0]["subject_tag"] == "history"
-        assert "工业革命" in payload["hits"][0]["content"]
+            search_response = client.post(
+                "/api/kb/search",
+                json={
+                    "query": "变化",
+                    "top_k": 5,
+                    "store_namespace": namespace,
+                    "subject_filter": ["history"],
+                    "topic_keywords": ["工业革命"],
+                },
+            )
+            assert search_response.status_code == 200
+            payload = search_response.json()
+            assert payload["count"] >= 1
+            assert payload["hits"][0]["subject_tag"] == "history"
+            assert "工业革命" in payload["hits"][0]["content"]
     finally:
         shutil.rmtree(source_dir, ignore_errors=True)
         shutil.rmtree(settings.vector_store_dir / namespace, ignore_errors=True)
