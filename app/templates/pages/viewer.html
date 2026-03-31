@@ -3,25 +3,142 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Teaching Agent Viewer</title>
-  <link rel="stylesheet" href="/static/css/viewer.css?v=20260321b">
+  <title>教学助手 - 预览画布</title>
+  <style>
+    /* --- 基础重置 --- */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; height: 100vh; overflow: hidden; background-color: #1e1e1e; color: #fff; }
+
+    /* --- 顶部导航栏 --- */
+    .viewer-header {
+      height: 60px;
+      background-color: #252526;
+      border-bottom: 1px solid #333;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+    }
+
+    .header-info h1 { font-size: 16px; font-weight: 600; color: #fff; }
+    .header-info p { font-size: 12px; color: #888; margin-top: 4px; }
+    .viewer-kicker { display: none; } /* 隐藏多余的小标签 */
+
+    /* 状态徽章 */
+    .viewer-badge {
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+      text-transform: uppercase;
+      background-color: #333;
+      color: #aaa;
+    }
+    .viewer-badge.active { background-color: #10a37f; color: white; }
+
+    /* --- 主预览区域 --- */
+    .viewer-stage-wrap {
+      height: calc(100vh - 60px);
+      position: relative;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background-color: #1e1e1e;
+    }
+
+    /* 空状态提示 */
+    .viewer-empty {
+      text-align: center;
+      color: #555;
+    }
+    .viewer-empty h2 { font-size: 24px; margin-bottom: 10px; }
+    .viewer-empty p { font-size: 14px; }
+
+    /* 内容舞台 (默认隐藏) */
+    .viewer-stage {
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+    }
+
+    /* Iframe 样式 (用于嵌入 HTML 预览) */
+    .viewer-frame {
+      width: 100%;
+      height: 100%;
+      border: none;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+  </style>
 </head>
 <body>
-  <main class="viewer-shell">
-    <header class="viewer-header">
-      <div>
-        <span class="viewer-kicker">Preview Viewer</span>
-        <h1 id="viewerTitle">等待预览内容</h1>
-        <p id="viewerMeta">工作台会把低保真预览或 SVG 中间稿发送到这里。</p>
-      </div>
-      <span id="viewerModeBadge" class="viewer-badge">EMPTY</span>
-    </header>
-    <section class="viewer-stage-wrap">
-      <div id="viewerEmptyState" class="viewer-empty">等待工作台推送预览内容。</div>
-      <div id="viewerStage" class="viewer-stage" hidden></div>
-      <iframe id="viewerHtmlFrame" class="viewer-frame" title="Viewer HTML Frame" hidden></iframe>
-    </section>
+  <header class="viewer-header">
+    <div class="header-info">
+      <h1 id="viewerTitle">预览画布</h1>
+      <p id="viewerMeta">等待工作台推送内容...</p>
+    </div>
+    <span id="viewerModeBadge" class="viewer-badge">等待中</span>
+  </header>
+
+  <main class="viewer-stage-wrap">
+    <!-- 空状态 -->
+    <div id="viewerEmptyState" class="viewer-empty">
+      <h2>👋 暂无内容</h2>
+      <p>请在对话中生成课件或图表，这里将自动显示预览。</p>
+    </div>
+
+    <!-- 实际内容容器 -->
+    <div id="viewerStage" hidden></div>
+    <iframe id="viewerHtmlFrame" class="viewer-frame" title="Viewer HTML Frame" hidden></iframe>
   </main>
-  <script src="/static/js/viewer.js?v=20260321b"></script>
+
+  <script>
+    // 这是一个简单的逻辑，模拟接收数据并显示
+    // 实际项目中，这里可能需要 WebSocket 或者轮询来接收后端推送
+    
+    const viewerTitle = document.getElementById('viewerTitle');
+    const viewerMeta = document.getElementById('viewerMeta');
+    const viewerBadge = document.getElementById('viewerModeBadge');
+    const emptyState = document.getElementById('viewerEmptyState');
+    const viewerStage = document.getElementById('viewerStage');
+    const viewerFrame = document.getElementById('viewerHtmlFrame');
+
+    // 模拟一个测试函数，你可以按 F12 在控制台调用 testViewer() 看看效果
+    window.testViewer = function() {
+      // 1. 更新头部信息
+      viewerTitle.innerText = "生成的 HTML 课件预览";
+      viewerMeta.innerText = "生成时间: " + new Date().toLocaleTimeString();
+      viewerBadge.innerText = "HTML PREVIEW";
+      viewerBadge.classList.add('active');
+
+      // 2. 隐藏空状态
+      emptyState.hidden = true;
+      viewerStage.hidden = false;
+      viewerFrame.hidden = false;
+
+      // 3. 在 iframe 里写入一些测试内容
+      const testHtmlContent = `
+        <html>
+          <body style="font-family: sans-serif; padding: 40px; background: #f0f4f8;">
+            <h1 style="color: #10a37f;">测试预览成功!</h1>
+            <p>这是后端生成的 HTML 内容。</p>
+            <div style="margin-top: 20px; padding: 20px; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+              <h3>课程内容摘要：</h3>
+              <ul>
+                <li>知识点 A</li>
+                <li>知识点 B</li>
+                <li>知识点 C</li>
+              </ul>
+            </div>
+          </body>
+        </html>
+      `;
+      viewerFrame.srcdoc = testHtmlContent;
+    };
+  </script>
 </body>
 </html>

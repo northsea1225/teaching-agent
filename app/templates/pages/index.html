@@ -1,229 +1,178 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Teaching Agent</title>
-  <link rel="stylesheet" href="/static/css/workbench.css?v=20260321b">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多模态教学助手</title>
+    <style>
+        /* --- 基础样式 --- */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; height: 100vh; background-color: #f7f7f8; overflow: hidden; }
+
+        /* --- 侧边栏 --- */
+        .sidebar { width: 260px; background-color: #202123; color: white; display: flex; flex-direction: column; padding: 10px; }
+        .new-chat-btn { background-color: #10a37f; color: white; border: none; border-radius: 4px; padding: 12px; font-size: 14px; font-weight: bold; cursor: pointer; margin-bottom: 20px; transition: background 0.2s; }
+        .new-chat-btn:hover { background-color: #0d8c6c; }
+        .history-list { flex: 1; overflow-y: auto; }
+        .history-item { padding: 10px 12px; margin-bottom: 4px; border-radius: 4px; font-size: 14px; cursor: pointer; color: #dcdcdc; }
+        .history-item:hover { background-color: #2f3133; }
+
+        /* --- 主聊天区 --- */
+        .main-content { flex: 1; display: flex; flex-direction: column; background-color: white; }
+        .chat-container { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
+        
+        /* 消息气泡 */
+        .message { max-width: 80%; padding: 12px 16px; border-radius: 8px; line-height: 1.6; font-size: 14px; white-space: pre-wrap; }
+        .user-message { background-color: #e1ffc1; align-self: flex-end; }
+        .bot-message { background-color: #f0f0f0; align-self: flex-start; }
+
+        /* 输入框区域 */
+        .input-area { padding: 15px; background-color: white; border-top: 1px solid #e0e0e0; display: flex; gap: 10px; }
+        .input-textarea { flex: 1; padding: 12px 16px; border: 1px solid #d1d5da; border-radius: 8px; font-size: 14px; resize: none; outline: none; max-height: 200px; overflow-y: auto; }
+        .send-btn { background-color: #10a37f; color: white; border: none; border-radius: 8px; padding: 0 20px; font-weight: bold; cursor: pointer; }
+        .send-btn:hover { background-color: #0d8c6c; }
+        .send-btn:disabled { background-color: #999; cursor: not-allowed; }
+
+        /* 加载动画 */
+        .loading { display: flex; gap: 4px; }
+        .loading-dot { width: 8px; height: 8px; border-radius: 50%; background-color: #333; animation: pulse 1.5s infinite ease-in-out; }
+        .loading-dot:nth-child(2) { animation-delay: 0.2s; }
+        .loading-dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes pulse { 0%, 80%, 100% { transform: scale(1); opacity: 1; } 40% { transform: scale(1.2); opacity: 0.6; } }
+        
+        .welcome { text-align: center; margin-top: 50px; color: #666; }
+        .welcome h2 { margin-bottom: 10px; color: #333; }
+    </style>
 </head>
 <body>
-  <main class="page">
-    <section class="hero">
-      <div>
-        <h1>Teaching Agent</h1>
-        <p class="note">按四步推进：先录入需求，再确认约束，随后生成课件，最后导出交付。</p>
-        <p>把需求、证据、策划和导出收拢到同一条教学工作流里。先确认约束，再推进生成和导出。</p>
-        <p>把需求、证据、策划和导出收拢到同一条教学工作流里。首页只展示整理后的项目摘要，不直接暴露接口原始返回。</p>
-        <p>当前页面是第一周的最小可用前端。你可以在这里提交教师需求、上传参考资料、生成课程大纲、逐页策划、低保真预览、SVG 中间稿，并导出 DOCX 与 PPTX 草稿。</p>
-      </div>
-      <div class="hero-links">
-        <a href="/docs" target="_blank" rel="noreferrer">API Docs</a>
-        <a href="/api/health" target="_blank" rel="noreferrer">Health</a>
-      </div>
-    </section>
-    <section class="workflow-strip">
-      <article class="workflow-step" id="stepIntakeCard" data-step-state="active">
-        <span class="workflow-index">01</span>
-        <div>
-          <strong>需求录入</strong>
-          <p>输入课题、设定主题方案，并上传参考资料。</p>
+    <!-- 侧边栏 -->
+    <div class="sidebar">
+        <button class="new-chat-btn" onclick="startNewChat()">+ 新对话</button>
+        <div class="history-list" id="chat-history">
+            <div class="history-item"><span>💬</span> 当前对话</div>
         </div>
-        <span class="workflow-badge" id="stepIntakeBadge" data-step-state="active">进行中</span>
-      </article>
-      <article class="workflow-step" id="stepConfirmCard" data-step-state="pending">
-        <span class="workflow-index">02</span>
-        <div>
-          <strong>约束确认</strong>
-          <p>核对目标、资料边界和待补充项，再开放生成。</p>
-          <p>确认学段、学科、目标和资料边界，再进入生成。</p>
-        </div>
-        <span class="workflow-badge" id="stepConfirmBadge" data-step-state="pending">待开始</span>
-      </article>
-      <article class="workflow-step" id="stepGenerateCard" data-step-state="pending">
-        <span class="workflow-index">03</span>
-        <div>
-          <strong>生成课件</strong>
-          <p>生成大纲、逐页策划、预览和 SVG 中间稿。</p>
-        </div>
-        <span class="workflow-badge" id="stepGenerateBadge" data-step-state="pending">待开始</span>
-      </article>
-      <article class="workflow-step" id="stepExportCard" data-step-state="pending">
-        <span class="workflow-index">04</span>
-        <div>
-          <strong>导出交付</strong>
-          <p>导出 DOCX 和 PPTX，并回看最近产物。</p>
-        </div>
-        <span class="workflow-badge" id="stepExportBadge" data-step-state="pending">待开始</span>
-      </article>
-    </section>
-    <section class="layout">
-      <aside class="panel control-panel">
-        <p class="note">先提交一段教学需求，系统会自动创建或复用当前会话。之后再上传文件或继续生成大纲、逐页策划与预览。</p>
-        <div class="session-row">
-          <span class="tag" id="sessionTag">Session: 未创建</span>
-          <span class="tag" id="stageTag">Stage: intake</span>
-          <span class="tag" id="workspaceTag">Workspace: 未创建</span>
-        </div>
-        <section class="step-block" id="intakeSection">
-          <div class="step-block-head">
-            <div>
-              <span class="section-kicker">Step 1</span>
-              <h2>需求录入</h2>
-              <p class="note">先输入教师需求，再补充主题方案、字体方案和参考资料。</p>
+    </div>
+
+    <!-- 主界面 -->
+    <div class="main-content">
+        <div class="chat-container" id="chat-container">
+            <div class="welcome">
+                <h2>多模态教学助手</h2>
+                <p>请输入您的问题，我将为您提供帮助</p>
             </div>
-            <span class="step-state-badge" id="intakeStateBadge" data-step-state="active">进行中</span>
-          </div>
-        <label for="title">会话标题</label>
-        <input id="title" value="Cross-subject Session">
-        <label for="content">教师需求</label>
-        <textarea id="content">我想做一节初中历史《工业革命》课程，45分钟，加入材料分析和讨论。</textarea>
-        <label for="themeSelect">主题方案</label>
-        <select id="themeSelect">
-          <option value="academy">academy</option>
-          <option value="studio">studio</option>
-          <option value="field">field</option>
-          <option value="briefing">briefing</option>
-        </select>
-        <label for="fontSelect">字体方案</label>
-        <select id="fontSelect">
-          <option value="classroom">classroom</option>
-          <option value="reading">reading</option>
-          <option value="modern">modern</option>
-        </select>
-        <label class="note" style="display:flex; gap:10px; align-items:center; margin-top:12px;">
-          <input id="webSearchToggle" type="checkbox">
-          联网补充搜索
-        </label>
-        <p class="note" style="margin-top:6px;">开启后会在本地知识库和当前上传资料之外，补充网页搜索结果作为参考来源。</p>
-        <label for="fileInput" style="margin-top: 14px;">上传参考资料</label>
-        <input id="fileInput" type="file">
-        <button id="uploadBtn" type="button" class="secondary">上传文件</button>
-        <button id="sendBtn" type="button">提交需求</button>
-        </section>
-        <section class="step-block" id="confirmSection">
-          <div class="step-block-head">
-            <div>
-              <span class="section-kicker">Step 2</span>
-              <h2>约束确认</h2>
-              <p class="note">提交后先确认需求边界，并手动剔除不相关命中资料，再放开生成和导出。</p>
-            </div>
-            <span class="step-state-badge" id="confirmStateBadge" data-step-state="pending">待开始</span>
-          </div>
-        <div class="status-box" id="confirmationBox">确认清单将在提交需求后出现。</div>
-        <div class="evidence-box" id="evidenceBox">
-          <div class="empty-board"><strong>命中证据确认</strong><br>提交需求后这里会出现当前命中的资料片段。先勾掉不相关资料，再确认约束。</div>
         </div>
-        <div class="button-grid">
-          <button id="refreshEvidenceBtn" type="button" class="secondary">刷新命中证据</button>
-          <button id="applyEvidenceBtn" type="button" class="secondary">保存证据选择</button>
-          <button id="refreshConfirmBtn" type="button" class="secondary">刷新确认清单</button>
-          <button id="confirmBtn" type="button" class="secondary">确认约束</button>
+
+        <div class="input-area">
+            <textarea class="input-textarea" id="user-input" placeholder="输入您的问题..." rows="1"></textarea>
+            <button class="send-btn" id="send-btn" onclick="sendMessage()">发送</button>
         </div>
-        </section>
-        <section class="step-block" id="generateSection">
-          <div class="step-block-head">
-            <div>
-              <span class="section-kicker">Step 3</span>
-              <h2>生成课件</h2>
-              <p class="note">确认后再生成大纲、逐页策划、低保真预览和 SVG 中间稿。</p>
-            </div>
-            <span class="step-state-badge" id="generateStateBadge" data-step-state="pending">待开始</span>
-          </div>
-        <div class="status-box" id="qualityBox">质量报告将在生成策划后出现。</div>
-        <div class="button-grid">
-          <button id="outlineBtn" type="button" class="secondary">生成大纲</button>
-          <button id="planBtn" type="button" class="secondary">生成逐页策划</button>
-          <button id="previewBtn" type="button" class="secondary">生成低保真预览</button>
-          <button id="svgBtn" type="button" class="secondary">生成 SVG 中间稿</button>
-          <button id="sessionBtn" type="button" class="secondary">刷新会话</button>
-        </div>
-        </section>
-        <section class="step-block" id="exportSection">
-          <div class="step-block-head">
-            <div>
-              <span class="section-kicker">Step 4</span>
-              <h2>导出交付</h2>
-              <p class="note">最后导出 DOCX / PPTX，并从项目概览查看最近产物和下载入口。</p>
-            </div>
-            <span class="step-state-badge" id="exportStateBadge" data-step-state="pending">待开始</span>
-          </div>
-        <div class="button-grid">
-          <button id="exportBtn" type="button" class="secondary">导出 DOCX</button>
-          <button id="exportPptxBtn" type="button" class="secondary">导出 PPTX</button>
-        </div>
-        <a id="downloadLink" class="download-link" href="#" target="_blank" rel="noreferrer" hidden>下载最近生成的 DOCX</a>
-        <a id="downloadPptxLink" class="download-link" href="#" target="_blank" rel="noreferrer" hidden>下载最近生成的 PPTX</a>
-        </section>
-        <div class="status-box" id="statusBox">等待操作。</div>
-      </aside>
-      <section class="stack">
-        <div class="panel">
-          <h2>数字便利贴</h2>
-          <p class="note">这里展示当前 `SlidePlan`。你可以直接在页面里完成调序、改单页、插页、删页和单页再生成。</p>
-          <div class="board-actions">
-            <button id="addSlideBtn" type="button" class="secondary">插入新页</button>
-            <button id="refreshBoardBtn" type="button" class="secondary">刷新当前策划</button>
-          </div>
-          <div id="slideBoard" class="slide-board">
-            <div class="empty-board">还没有逐页策划。先点击“生成逐页策划”，然后在这里编辑页面卡片。</div>
-          </div>
-        </div>
-        <div class="panel summary-panel">
-          <div class="summary-header">
-            <div>
-              <h2>项目概览</h2>
-              <p class="note">这里只保留项目摘要，不展示接口原始返回。</p>
-              <p class="note">这里只显示会话摘要、当前进度和最近产物，不在前端直接展示接口原始返回。</p>
-            </div>
-            <span class="pill" id="overviewBadge">等待会话</span>
-          </div>
-          <div class="summary-grid">
-            <article class="summary-card">
-              <span class="summary-label">课题与范围</span>
-              <h3 id="lessonSummaryTitle">未提交需求</h3>
-              <p class="summary-copy" id="lessonSummaryMeta">提交需求后会显示学段、学科、课时和资料边界。</p>
-            </article>
-            <article class="summary-card">
-              <span class="summary-label">生成进度</span>
-              <div class="summary-metrics" id="progressSummary">
-                <div class="metric"><span>资料</span><strong>0</strong></div>
-                <div class="metric"><span>页面</span><strong>0</strong></div>
-                <div class="metric"><span>质量</span><strong>-</strong></div>
-              </div>
-              <p class="summary-copy" id="retrievalSummary">等待会话创建后统计资料、证据命中和生成情况。</p>
-            </article>
-            <article class="summary-card">
-              <span class="summary-label">最近产物</span>
-              <ul class="summary-list" id="artifactSummary">
-                <li class="summary-empty">暂无导出文件。生成 DOCX 或 PPTX 后会在这里显示。</li>
-              </ul>
-              <div class="artifact-links">
-                <a id="artifactDocxChip" class="artifact-chip is-disabled" href="#" target="_blank" rel="noreferrer">DOCX 待生成</a>
-                <a id="artifactPptxChip" class="artifact-chip is-disabled" href="#" target="_blank" rel="noreferrer">PPTX 待生成</a>
-              </div>
-            </article>
-          </div>
-          <div class="summary-footer" id="nextActionBox"><strong>下一步建议：</strong>先提交需求，再查看确认清单并确认约束。</div>
-        </div>
-        <div class="panel">
-          <h2>预览区</h2>
-          <p class="note">这里展示低保真预览或 SVG 页面，不直接展示接口返回。</p>
-          <p class="note">调用 `生成低保真预览` 会展示 HTML 课件草稿；调用 `生成 SVG 中间稿` 会展示当前页 SVG，并可用上一页 / 下一页浏览整套中间稿。缩略导航会同步显示简化版引用标签，非激活页会自动弱化，界面颜色会随当前主题方案同步更新。</p>
-          <p class="note">调用 `生成低保真预览` 会展示 HTML 课件草稿；调用 `生成 SVG 中间稿` 会展示当前页 SVG，并可用上一页 / 下一页浏览整套中间稿。缩略导航会同步显示简化版引用标签，非激活页会自动弱化，界面颜色会随当前主题方案同步更新。</p>
-          <p class="note">调用 `生成低保真预览` 会展示 HTML 课件草稿；调用 `生成 SVG 中间稿` 会展示当前页 SVG，并可用上一页 / 下一页浏览整套中间稿。缩略导航会同步显示简化版引用标签，非激活页会自动弱化，界面颜色会随当前主题方案同步更新。</p>
-          <div class="svg-nav">
-            <button id="svgPrevBtn" class="secondary" disabled>上一页</button>
-            <button id="svgNextBtn" class="secondary" disabled>下一页</button>
-            <span id="svgPageLabel" class="svg-nav-status">SVG 未生成</span>
-          </div>
-          <div id="svgThumbStrip" class="svg-thumb-strip">
-            <div class="empty-board">SVG 缩略导航将在生成中间稿后显示。</div>
-          </div>
-          <iframe id="previewFrame" title="Preview Deck" src="/viewer"></iframe>
-        </div>
-      </section>
-    </section>
-  </main>
-  <script src="/static/js/workbench.js?v=20260321b"></script>
+    </div>
+
+    <script>
+        const chatContainer = document.getElementById('chat-container');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        
+        // 当前会话ID，初始为空
+        let currentSessionId = null;
+
+        // 自动调整输入框高度
+        userInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = this.scrollHeight + 'px';
+        });
+
+        // 发送消息
+        async function sendMessage() {
+            const message = userInput.value.trim();
+            if (!message) return;
+
+            // 1. 显示用户消息
+            addMessageToUI(message, 'user');
+            userInput.value = '';
+            userInput.style.height = 'auto';
+
+            // 2. 显示加载中
+            const loadingId = showLoading();
+            sendBtn.disabled = true;
+
+            try {
+                // 3. 调用后端接口
+                const response = await fetch('/api/chat/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        content: message,           // 必填：用户输入
+                        session_id: currentSessionId, // 选填：当前会话ID
+                        title: "新对话",            // 必填：如果是新会话，给个标题
+                        use_web_search: false       // 选填：暂时设为false
+                    })
+                });
+
+                if (!response.ok) throw new Error('Network response was not ok');
+
+                const data = await response.json();
+
+                // 4. 移除加载动画
+                removeLoading(loadingId);
+
+                // 5. 处理返回数据 (关键修改点)
+                currentSessionId = data.session_id; // 保存会话ID
+                
+                // 这里改了！后端返回的是 assistant_message
+                const botReply = data.assistant_message; 
+                
+                addMessageToUI(botReply, 'bot');
+
+            } catch (error) {
+                console.error('请求失败:', error);
+                removeLoading(loadingId);
+                addMessageToUI("网络错误，请检查后端服务是否启动。", 'bot');
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        // 添加消息到界面
+        function addMessageToUI(text, sender) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}-message`;
+            messageDiv.textContent = text;
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // 显示加载动画
+        function showLoading() {
+            const id = 'loading-' + Date.now();
+            const div = document.createElement('div');
+            div.id = id;
+            div.className = 'message bot-message';
+            div.innerHTML = '<div class="loading"><span class="loading-dot"></span><span class="loading-dot"></span><span class="loading-dot"></span></div>';
+            chatContainer.appendChild(div);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return id;
+        }
+
+        // 移除加载动画
+        function removeLoading(id) {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        }
+
+        // 开始新对话
+        function startNewChat() {
+            currentSessionId = null; // 重置ID
+            chatContainer.innerHTML = '<div class="welcome"><h2>多模态教学助手</h2><p>请输入您的问题，我将为您提供帮助</p></div>';
+        }
+
+        // 回车发送
+        userInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+    </script>
 </body>
 </html>
